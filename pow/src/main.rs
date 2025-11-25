@@ -11,6 +11,7 @@ use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::Mutex;
 
+// Адресом пользователя выступает VerifyingKey
 type Address = VerifyingKey;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,6 +31,7 @@ impl TxUnsigned {
     }
 }
 
+// Подписанная транзакция с возможностью проверки её подлинности
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Tx {
     sender: Address,
@@ -39,6 +41,9 @@ struct Tx {
 }
 
 impl Tx {
+    // Для подписи транзакции пользователь должен передать свой приватный ключ
+    // В реальных условиях, данная операция должна производиться на компьютере пользователя
+    // Далее подписанная транзакция может передаваться по сети
     fn sign(sender: Address, recipient: Address, amount: u64, signinig_key: SigningKey) -> Tx {
         let unsigned = TxUnsigned::new(sender, recipient, amount);
         let serialized = serde_json::to_string(&unsigned).unwrap();
@@ -52,6 +57,7 @@ impl Tx {
         }
     }
 
+    // Верификация подлинности транзакции
     fn is_valid(&self) -> bool {
         let verifying_key: VerifyingKey = self.sender;
         let unsigned = TxUnsigned::new(self.sender, self.recipient, self.amount);
@@ -63,18 +69,21 @@ impl Tx {
     }
 }
 
+// Мы инкапсулируем реализацию конкретного значения хэша,
+// чтобы иметь возможность легко изменить его в будущем
 type BlockHash = [u8; 32];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Block {
-    index: u64,
-    nonce: u64,
-    previous_block: BlockHash,
-    hash: BlockHash,
-    txs: Vec<Tx>,
+    index: u64,                 // позицию в цепи
+    nonce: u64,                 // число, найденное майнерами для соблюдения сложности
+    previous_block: BlockHash,  // хэш предыдущего блока (нет у генезис-блока)
+    hash: BlockHash,            // хэш текущего блока
+    txs: Vec<Tx>,               // список транзакций с отправителем, получателем и суммой
 }
 
 impl Block {
+    // При создании нового блока. Хеш-значение рассчитывается автоматически.
     pub fn new(index: u64, nonce: u64, previous_block: BlockHash, txs: Vec<Tx>) -> Self {
         let mut block = Block {
             index,
@@ -88,6 +97,7 @@ impl Block {
         block
     }
 
+    // Рассчитывается хеш-значение блока
     pub fn calculate_hash(&self) -> BlockHash {
         let mut hashable_data = self.clone();
         hashable_data.hash = BlockHash::default();
@@ -103,6 +113,7 @@ impl Block {
     }
 }
 
+// Типы ошибок, возвращаемые при попытке добавить блоки с недопустимыми полями
 #[derive(Error, PartialEq, Debug)]
 enum BlockchainError {
     #[error("Invalid previous_hash")]
@@ -115,8 +126,10 @@ enum BlockchainError {
     IncorrectDifficulty,
 }
 
+// Урвень сложности блокчейн системы
 const DIFFICULTY: u32 = 2;
 
+// Структура блокчейн содержит все существующие блоки
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Blockchain {
     blocks: Vec<Block>,
@@ -124,6 +137,7 @@ struct Blockchain {
 
 impl Blockchain {
     fn new() -> Blockchain {
+        // При первом создании блокчейн, добавляется блок генезиса
         let genesis_block = Blockchain::create_genesis_block();
         let blocks = vec![genesis_block];
 
@@ -139,17 +153,22 @@ impl Blockchain {
         Block::new(index, nonce, previous_hash, transactions)
     }
 
+    // Пытается добавить новый блок в блокчейн
+    // Проверяется соответствие значений нового блока состоянию блокчейна
     pub fn add_block(&mut self, block: Block) -> Result<()> {
         let blocks = &self.blocks;
         let last = &self.blocks[blocks.len() - 1];
+        // Проверка корректности указателя на предидущий блок
         if block.previous_block != last.hash {
             return Err(BlockchainError::PreviousHashMismatch.into());
         }
 
+        // Проверка соответствия хеша транзакций
         if block.hash != block.calculate_hash() {
             return Err(BlockchainError::InvalidHash.into());
         }
 
+        // Проверка уровня сложности
         if leading_zeros(&block.hash) < DIFFICULTY {
             return Err(BlockchainError::IncorrectDifficulty.into());
         }
@@ -164,6 +183,7 @@ impl Blockchain {
     }
 }
 
+// Вспомогательная функция для проверки уровня сложности
 fn leading_zeros(bytes: &[u8]) -> u32 {
     bytes
         .iter()
@@ -173,6 +193,7 @@ fn leading_zeros(bytes: &[u8]) -> u32 {
         .unwrap()
 }
 
+// Простая имплеметация пула транзакций
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Mempool {
     transactions: Vec<Tx>,
@@ -196,15 +217,20 @@ impl Mempool {
     }
 }
 
+// Майнер
 pub struct Miner {
     max_nonce: u64,
 }
 
 impl Miner {
+    // При создании Майнера необходимо указать максимальное значение nonce
     fn new(max_nonce: u64) -> Miner {
         Miner { max_nonce }
     }
 
+    // Пытается найти следующий валидный блок блокчейна
+    // Он создаёт блоки с разными значениями nonce, пока не найдётся хеш, соответствующий сложности
+    // Возвращает либо валидный блок, либо значение None, если блок не найден
     fn mine_block(&self, last_block: &Block, transactions: &[Tx]) -> Option<Block> {
         for nonce in 0..self.max_nonce {
             let next_block = self.create_next_block(last_block, transactions.to_owned(), nonce);
@@ -273,6 +299,7 @@ async fn post_blocks(State(state): State<Arc<AppState>>, block_json: Json<Block>
 async fn main() {
     let mut rng = OsRng;
 
+    // В качестве исходных данных создаём три кошелька
     let alice_signing_key: SigningKey = SigningKey::generate(&mut rng);
     let alice_address: Address = alice_signing_key.verifying_key();
 
@@ -282,9 +309,11 @@ async fn main() {
     let charlie_signing_key: SigningKey = SigningKey::generate(&mut rng);
     let charlie_address: Address = bob_signing_key.verifying_key();
 
+    // Выполняем несколько транзакций 
     let tx1 = Tx::sign(alice_address, bob_address, 100, alice_signing_key);
     let tx2 = Tx::sign(bob_address, charlie_address, 15, charlie_signing_key);
 
+    // Добавляем их в mempool
     let miner = Miner::new(1_000_000);
     let mut blockchain = Blockchain::new();
     let mut mempool = Mempool::new();
@@ -302,6 +331,8 @@ async fn main() {
         pool: Mutex::new(mempool),
     });
 
+    // Приложение предоставляет REST API,
+    // через которое клиенты и майнеры могут взаимодействовать с блокчейном.
     let app = Router::new()
         .route("/", get(index))
         .route("/blocks", get(get_blocks).post(post_blocks))
